@@ -103,9 +103,21 @@ Pivot with margins gives grand total INR 2,998,668.80 — matches SQL.
 | City | Sum (INR) | Mean (INR) | Count |
 |---|---|---|---|
 | Bengaluru | 523,643.40 | 276.47 | 1,894 |
+| Chennai | 463,629.15 | 272.72 | 1,700 |
+| Delhi | 502,829.80 | 243.62 | 2,064 |
+| Hyderabad | 528,589.90 | 284.95 | 1,855 |
 | Mumbai | 479,058.50 | 297.00 | 1,613 |
+| Pune | 500,918.05 | 252.48 | 1,984 |
 
 Completed order_amount: mean 269.91, median 135.00, skew ~4.61, first quartile 64.80, third quartile 297.00, upper fence 645.30 → 897 outliers above, none below. The largest correlation in absolute value is order_amount vs discount_pct at −0.095; order_amount vs quantity is +0.087.
+Correlation matrix (completed orders):
+
+| | order_amount | discount_pct | quantity | delivery_minutes |
+|---|---|---|---|---|
+| order_amount | 1.000 | -0.095 | 0.087 | -0.003 |
+| discount_pct | -0.095 | 1.000 | -0.000 | -0.010 |
+| quantity | 0.087 | -0.000 | 1.000 | -0.013 |
+| delivery_minutes | -0.003 | -0.010 | -0.013 | 1.000 |
 
 ### What the data looks like
 
