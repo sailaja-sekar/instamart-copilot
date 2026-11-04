@@ -23,6 +23,7 @@ From repo root. Commands are for Windows PowerShell; on Mac/Linux swap step 2 fo
 7. `python validate.py`
 8. `python run_queries.py`
 9. `python part_a_explore.py`
+10. `python part_b_segments.py`
 
 Parts B–D commands will get added as I build them.
 
@@ -129,7 +130,54 @@ The largest correlation in absolute value is order_amount vs discount_pct at abo
 
 ## Part B
 
-TBD
+### RFM table (`part_b_segments.py`)
+
+Built from completed orders only, as of the snapshot 2025-10-01 00:00:00. Recency is whole days since the last completed order, frequency is the number of distinct completed orders, and monetary is the total of order_amount in INR.
+
+| Measure | Result |
+|---|---|
+| Customers with at least one completed order | 1,175 |
+| Recency | median 19, minimum 0, maximum 180 |
+| Frequency | mean 9.46, maximum 33 |
+| Monetary (INR) | mean 2,552.06, maximum 14,766.55 |
+
+### K-means (RFM scaled with StandardScaler, n_init=10, random_state=42)
+
+| K | Inertia | Silhouette |
+|---|---|---|
+| 2 | 1820.761 | 0.465 |
+| 3 | 1268.235 | 0.445 |
+| 4 | 743.071 | 0.526 |
+| 5 | 617.367 | 0.480 |
+| 6 | 503.171 | 0.482 |
+| 7 | 408.460 | 0.416 |
+| 8 | 366.503 | 0.412 |
+
+**Final K = 4.**
+
+I chose K=4 because it gives the best balance between how tight the clusters are and how well they are separated. If we look at the inertia, it drops a lot from K=3 (1,268) to K=4 (743), but the drop slows down at K=5 (617). This "elbow" tells us that adding a 5th cluster doesn't help much. Also, K=4 has the highest silhouette score (0.526) out of all the options. Finally, from a business side, four distinct groups are easy to understand and target with specific marketing.
+
+Inertia will always go down as we add more clusters, because the data points are just getting grouped into smaller, tighter spaces. So, K=8 will naturally have a lower inertia than K=2. That's why we can't rely on inertia alone; we have to look at the silhouette score and make sure the segments actually make sense practically.
+
+### Segment profile
+
+| Segment id | Name | Customers | Mean recency (days) | Mean frequency | Mean monetary (INR) |
+|---|---|---|---|---|---|
+| 0 | Occasional Low-Spend | 436 | 28.86 | 3.77 | 1,057.62 |
+| 1 | Premium Big-Ticket | 138 | 24.12 | 6.77 | 7,129.70 |
+| 2 | Loyal Regulars | 419 | 8.77 | 19.40 | 3,410.02 |
+| 3 | At-Risk Lapsing | 182 | 109.04 | 2.20 | 685.99 |
+
+The segment ids are only labels produced by K-means and have no ordering. Premium is the segment with the highest mean monetary value.
+
+- **Occasional Low-Spend:** Try to increase their buying frequency by offering affordable bundles, personalized product suggestions, and small discounts.
+- **Premium Big-Ticket:** Focus on keeping these high-value customers happy with exclusive VIP offers, premium product recommendations, and a personalized experience.
+- **Loyal Regulars:** Reward their loyalty with a points system, special repeat-purchase benefits, and early access to new sales.
+- **At-Risk Lapsing:** Try to win them back before they leave completely by sending personalized "we miss you" emails and comeback discount codes.
+
+### PCA
+
+PCA with 2 components on the scaled RFM matrix explains 0.634 and 0.218 of the variance (total 0.852). `outputs/customer_segments.csv` holds customer_id, recency, frequency, monetary, segment_id, segment_name and is_premium for all 1,175 customers (138 are Premium).
 
 ## Part C
 
