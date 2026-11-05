@@ -175,9 +175,11 @@ The segment ids are only labels produced by K-means and have no ordering. Premiu
 - **Loyal Regulars:** Reward their loyalty with a points system, special repeat-purchase benefits, and early access to new sales.
 - **At-Risk Lapsing:** Try to win them back before they leave completely by sending personalized "we miss you" emails and comeback discount codes.
 
+The names follow each segment's profile: Premium Big-Ticket has by far the highest mean spend (INR 7,129.70); Loyal Regulars order the most often (19.40 orders) and most recently (8.77 days); At-Risk Lapsing has gone longest since its last order (109.04 days); Occasional Low-Spend orders rarely (3.77 orders) and spends little (INR 1,057.62).
+
 ### PCA
 
-PCA with 2 components on the scaled RFM matrix explains 0.634 and 0.218 of the variance (total 0.852). `outputs/customer_segments.csv` holds customer_id, recency, frequency, monetary, segment_id, segment_name and is_premium for all 1,175 customers (138 are Premium).
+PCA with 2 components on the scaled RFM matrix explains 0.634 and 0.218 of the variance (total 0.852). In plain words, the first two components keep about 85% of the information in the three RFM columns, so a two-dimensional view summarises the customers well. `outputs/customer_segments.csv` holds customer_id, recency, frequency, monetary, segment_id, segment_name and is_premium for all 1,175 customers (138 are Premium).
 
 ## Part C
 
