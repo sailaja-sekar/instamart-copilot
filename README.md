@@ -24,6 +24,7 @@ From repo root. Commands are for Windows PowerShell; on Mac/Linux swap step 2 fo
 8. `python run_queries.py`
 9. `python part_a_explore.py`
 10. `python part_b_segments.py`
+11. `python part_b_lapse.py`
 
 Parts B–D commands will get added as I build them.
 
@@ -180,6 +181,97 @@ The names follow each segment's profile: Premium Big-Ticket has by far the highe
 ### PCA
 
 PCA with 2 components on the scaled RFM matrix explains 0.634 and 0.218 of the variance (total 0.852). In plain words, the first two components keep about 85% of the information in the three RFM columns, so a two-dimensional view summarises the customers well. `outputs/customer_segments.csv` holds customer_id, recency, frequency, monetary, segment_id, segment_name and is_premium for all 1,175 customers (138 are Premium).
+
+### Lapse problem (`part_b_lapse.py`)
+
+Cutoff 2025-09-01. The cohort is every customer with at least one completed order before the cutoff. The label `lapsed` is 1 if the customer has no completed order dated 2025-09-01 through 2025-09-30, otherwise 0.
+
+| Measure | Result |
+|---|---|
+| Customers in the cohort | 1,156 |
+| Lapsed | 443 (38.32%) |
+| Training / test rows (`train_test_split`, test_size=0.2, stratify, random_state=42) | 924 / 232 |
+| Baseline "always not lapsed", test accuracy | 61.6% |
+| Baseline lapsed-class F1 | 0 |
+
+Features: recency (days from the cutoff to the last completed order), frequency, monetary, average discount_pct of completed orders, cancellation rate (cancelled orders divided by all orders with a final status, before the cutoff), average delivery_minutes of completed orders, favourite product category, city, age, gender and tenure in days (cutoff minus signup_date).
+
+No order dated on or after 2025-09-01 entered the features, and the segment labels from Part B task 3 were not used as features, because both would leak the answer. No encoder, scaler or resampler saw test rows.
+
+### Preprocessing
+
+Nominal columns (city, gender, favourite category) are one-hot encoded with k-1 columns each (`OneHotEncoder(drop="first")`) and numeric columns are standardised with `StandardScaler`, all inside a scikit-learn Pipeline that is fitted on the training rows only. No feature column contains a missing value in the training or test rows.
+
+| | Mean of frequency |
+|---|---|
+| Learned by the scaler (training rows only) | 8.1147 |
+| Full cohort | 8.0285 |
+
+The two means differ slightly because the scaler only learns from the 80% training split, while the full cohort includes all training and test customers.
+
+### Tuning and test results
+
+| Model | Grid | Best parameters | Best CV F1 |
+|---|---|---|---|
+| Logistic regression | C in 0.01, 0.1, 1, 10, 100 | C = 100 | 0.651 |
+| Random forest (100 trees, random_state=42) | max_depth 3, 5, 8; min_samples_leaf 5, 10, 20 | depth 8, leaf 10 | 0.687 |
+
+Both searches use cv=5 and scoring="f1". Test set, lapsed class:
+
+| Model | Confusion matrix [[TN, FP], [FN, TP]] | Precision | Recall | F1 |
+|---|---|---|---|---|
+| Logistic regression | [[111, 32], [31, 58]] | 0.644 | 0.652 | 0.648 |
+| Random forest | [[111, 32], [32, 57]] | 0.640 | 0.640 | 0.640 |
+
+**Selected model: random forest.** I selected it because its cross-validated F1 (0.687) was higher than that of logistic regression (0.651). The two models are almost identical on the test set and catch about the same share of lapsing customers, so the cost argument does not separate them and cross-validation, a rule fixed before the test set was used, decides. From a business side, missing a customer who is about to lapse means losing their future revenue completely, while wrongly targeting a loyal customer only costs a small discount they did not need. Both models are well above the required test F1 of 0.55 (the forest scores 0.640). Because missing a lapsing customer is the more expensive mistake, recall matters more than precision for the retention team.
+
+### Class-balance experiment
+
+The lapsed rows of the training set were over-sampled with replacement (random_state=42), keeping every original row, until both classes had 570 rows (the original training counts were 570 not lapsed and 354 lapsed). The best logistic regression was refitted on that balanced data and scored on the original, unchanged test set.
+
+| Training data | Precision | Recall | F1 |
+|---|---|---|---|
+| Original | 0.644 | 0.652 | 0.648 |
+| Balanced | 0.589 | 0.854 | 0.697 |
+
+Recall moved the most, jumping from 0.652 to 0.854, while precision fell from 0.644 to 0.589. This means the retention team will catch many more customers who are about to lapse, but the trade-off is that they will also contact more customers who would have stayed anyway.
+
+### Feature importance and coefficients
+
+Top five features of the random forest (importance shows how much a feature helps the model, not in which direction):
+
+| Feature | Importance |
+|---|---|
+| monetary | 0.278 |
+| frequency | 0.277 |
+| recency | 0.111 |
+| avg_delivery | 0.062 |
+| avg_discount | 0.053 |
+
+Logistic regression coefficients on standardised features (positive means higher odds of lapsing, other features held constant):
+
+| Feature | Coefficient |
+|---|---|
+| recency | 0.040 |
+| frequency | -1.698 |
+| cancellation rate | -0.124 |
+
+- **Monetary:** how much a customer spends is a strong indicator of whether they will stick around.
+- **Frequency:** how often they order is heavily tied to their likelihood of lapsing.
+- **Recency:** the time since their last order helps spot customers who are drifting away.
+- **Average delivery:** their delivery experience adds useful context to the prediction.
+- **Average discount:** how they use discounts also helps the model make its guesses.
+- **Recency coefficient (0.040):** as the days since the last order increase, the odds of lapsing go up slightly.
+- **Frequency coefficient (-1.698):** customers who order very often are much less likely to lapse.
+- **Cancellation rate coefficient (-0.124):** holding other features constant, a higher cancellation rate is linked to slightly lower lapse odds in this model, but the coefficient is small, so it should not be over-read.
+
+### Saved model and retention list
+
+The selected model (the full pipeline) is saved with `joblib.dump` to `outputs/lapse_model.joblib`. Reloading it with `joblib.load` reproduces the original test predictions exactly.
+
+`outputs/retention_list.csv` lists the Premium customers in the test set (40 customers) ranked by predicted lapse probability, top 10, with customer_id, lapse_probability and actually_lapsed. Of these 10, 1 truly lapsed.
+
+The Premium flag comes from the whole-window RFM, which includes the September window that defines the lapse label, so this retention list is illustrative and not a strictly leakage-free evaluation, even though the model's own input features use only orders before the cutoff.
 
 ## Part C
 
