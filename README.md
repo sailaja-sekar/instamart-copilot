@@ -29,8 +29,6 @@ From repo root. Commands are for Windows PowerShell; on Mac/Linux swap step 2 fo
 13. `python policy_rag.py`
 14. `python refund_agent.py`
 
-Parts B–D commands will get added as I build them.
-
 ## Part A
 
 ### Audit (`part_a_audit.py`)
