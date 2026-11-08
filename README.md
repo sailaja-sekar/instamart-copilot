@@ -26,6 +26,8 @@ From repo root. Commands are for Windows PowerShell; on Mac/Linux swap step 2 fo
 10. `python part_b_segments.py`
 11. `python part_b_lapse.py`
 12. `python part_c_triage.py`
+13. `python policy_rag.py`
+14. `python refund_agent.py`
 
 Parts B–D commands will get added as I build them.
 
@@ -361,7 +363,93 @@ Rule-validated by code: 147 tickets (135 JSON plus 12 keyword). Sent to humans: 
 
 ## Part D
 
-TBD
+### Chunking and retrieval (`policy_rag.py`)
+
+The five policy documents are split into chunks of 40 words with an overlap of 10 words (the next chunk starts 30 words later), stopping after the first chunk whose end reaches or passes the last word. The source file name is recorded with every chunk.
+
+| Document | Chunks |
+|---|---|
+| refund_policy.txt | 4 |
+| delivery_policy.txt | 3 |
+| escalation_policy.txt | 3 |
+| payment_policy.txt | 3 |
+| privacy_policy.txt | 2 |
+| Total | 15 |
+
+`TfidfVectorizer()` is fitted on the chunk texts, a query is transformed with the same fitted vectorizer, and chunks are ranked by `cosine_similarity`. `retrieve(query, k=3)` returns dictionaries with source, score and text. For the query "refund policy late delivery" the top three chunks all come from `refund_policy.txt` (scores 0.2719, 0.2514 and 0.2454).
+
+TF (Term Frequency) measures how often a word shows up in a specific chunk. IDF (Inverse Document Frequency) looks at how rare that word is across all the chunks, giving more weight to unique words and less weight to common ones. The main limitation here is that TF-IDF only matches exact words, not the actual meaning. So, if a customer types "money back" but the document says "refund", TF-IDF might miss the connection because the words are different, even though they mean the same thing.
+
+### Augmented answers and evaluation
+
+`answer(question)` retrieves three chunks and sends two messages to `mock_llm.chat`: a system message containing POLICY ASSISTANT that tells the model to answer only from the supplied context (or say it could not find the information), and a user message of the form `CONTEXT:`, the three chunks each prefixed with `[source file name]` on its own line, then `QUESTION:` and the question. It returns the model's text and the sources used.
+
+`data/raw/policy_eval.csv` has 14 questions: 12 answerable and 2 not covered by any document.
+
+| Chunking | Chunks | Expected document in top 3 (of 12) | Expected fact in answer (of 12) | Fallback answer on the 2 unanswerable |
+|---|---|---|---|---|
+| 40 words, overlap 10 | 15 | 12 | 12 | 2 |
+| 40 words, overlap 0 | 13 | 12 | 10 | 2 |
+
+With no overlap two questions break: "What delivery time makes a completed order eligible for a full refund?" and "How soon is money returned when a payment fails but is deducted?". In both cases the right document is still retrieved, but the answer is missing.
+
+Without overlap, a single sentence containing the full answer can get cut in half between two chunks, so when the system retrieves one of those chunks it only gets part of the answer. For instance, the 45-minute delivery threshold for a full refund or the 48-hour return period for a failed payment ends up split at the boundary. A 10-word overlap repeats the end of one chunk at the start of the next, which keeps these facts together so they are not lost.
+
+### Tools and the ReAct loop (`refund_agent.py`)
+
+Refund rules implemented by the tools: only completed orders can be refunded; a completed order delivered in more than 45 minutes is refunded 100% of its order_amount; delivered in 45 minutes or less the refund is 0; a refund above INR 1000 is escalated to a human and not issued automatically.
+
+| Tool | What it does |
+|---|---|
+| get_order(order_id) | Reads `data/instamart.db` and returns order_id, status, order_amount and delivery_minutes, or an "order not found" error |
+| search_policy(query) | Returns the retrieval results (the same `retrieve` as above) under the key results |
+| calculate_refund(order_amount, delivery_minutes) | Returns the refund in INR following the rules above |
+| issue_refund(order_id, refund_inr) | Appends a line to `outputs/refund_ledger.jsonl` and returns the amount (refuses amounts above INR 1000) |
+| escalate_to_human(order_id, refund_inr) | Appends a line to `outputs/refund_ledger.jsonl` and returns the amount |
+
+Each tool has a name, a one-sentence description and a parameter specification in `TOOLS_SPEC`, and `TOOL_MAP` maps each name to its function. `run_agent(user_message, scenario_id, max_iterations=6, token_limit=6000, time_limit_seconds=10)` starts with a system message containing AGENT and the user message. In each iteration it calls the model; a reply without tool calls is the final answer, otherwise it appends the assistant tool call, runs the tool through `TOOL_MAP` and appends the tool observation as JSON. Results for the seven scenarios in `data/raw/agent_scenarios.csv`:
+
+| Scenario | Status | Refund (INR) | Model calls | Tokens used |
+|---|---|---|---|---|
+| S1 | REFUND | 128.25 | 5 | 1,102 |
+| S2 | REFUND | 135.00 | 5 | 1,102 |
+| S3 | ESCALATE | 1,999.00 | 5 | 1,089 |
+| S4 | DENIED | 0.00 | 4 | 769 |
+| S5 | DENIED | 0.00 | 3 | 460 |
+| S6 | NOT_FOUND | 0.00 | 2 | 154 |
+| S7 | FALLBACK_MAX_ITERATIONS | 0.00 | 6 | 3,246 |
+
+S7 is the looping scenario: the model keeps asking for the policy search, so the run stops after the sixth model call and hands the case to a human. The one line per run is saved in `outputs/agent_runs.jsonl` (scenario_id, status, final_answer, llm_calls, tokens_used and every step's tool, arguments and observation).
+
+### Stopping safely
+
+The loop stops with a human hand-over message, and returns the steps completed so far, when any of three limits is reached: more than max_iterations model calls (status FALLBACK_MAX_ITERATIONS), total tokens above token_limit, checked right after each model call and before the requested tool is run (FALLBACK_TOKEN_LIMIT), or elapsed wall-clock time of time_limit_seconds or more, checked at the top of each iteration (FALLBACK_TIMEOUT).
+
+| Demonstration | Status |
+|---|---|
+| S1 with token_limit=200 | FALLBACK_TOKEN_LIMIT (stopped after 3 model calls and 2 tools) |
+| S1 with time_limit_seconds=0 | FALLBACK_TIMEOUT (stopped before the first model call) |
+
+### Resumable runs
+
+After every tool observation a checkpoint is written to `state/<run id>.json` with the run id, scenario id, the full message list, tokens used, the step number and the list of tools already executed. `resume_agent(run_id)` loads the checkpoint and continues. For the demonstration S1 was run with a simulated crash right after the second tool and its checkpoint, then resumed. The tools executed across the crash and the resume, in order:
+
+1. get_order
+2. search_policy
+3. calculate_refund
+4. issue_refund
+
+That is four executions with none repeated, and the final result is REFUND of INR 128.25.
+
+The tools write to the ledger before the checkpoint is saved, so a crash between the two could repeat an action on resume. To prevent a duplicate ledger line, the ledger write skips an action whose run id, tool and order already appear in the ledger. This check is per run, so two different runs on the same order would each record a refund; a production system would check the order itself.
+
+Output files: `outputs/agent_runs.jsonl` (7 scenario runs), `outputs/agent_demos.jsonl` (the token-limit, timeout and crash-and-resume runs), `outputs/refund_ledger.jsonl` (4 lines: S1, S2, S3 and the S1 crash-and-resume demo) and `state/` (9 checkpoints).
+
+### ReAct against plan-and-execute
+
+ReAct works step-by-step. It calls the model, looks at the result from the tool, and then decides what to do next. In our test, S1 took 5 model calls and 1,102 tokens, S5 took 3 calls and 460 tokens, and S6 took 2 calls and 154 tokens. A plan-and-execute design could save calls and tokens for normal requests, because it asks the model to map out the entire plan just once and then follows it, whereas ReAct sends the growing message history again on every call.
+
+However, if something unexpected happens, such as a NOT_FOUND error or a cancelled order, the original plan might not work anymore. ReAct handled both cases cheaply: it saw the observation and stopped after 2 calls (S6) and 3 calls (S5) without running the remaining steps. A plan-and-execute design would have to run steps that are no longer needed or pause and call the model again to make a new plan. For this refund workflow, I would choose ReAct. Refund decisions require checking order status, delivery times and policies before doing anything that involves money. It may use a few more model calls, but deciding step by step gives better control and helps prevent giving someone the wrong refund.
 
 ## Limitations and Next Steps
 
